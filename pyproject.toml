@@ -1,0 +1,16 @@
+[project]
+name = "funuser"
+version = "0.1.1"
+description = "User Management System"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [ "fastapi==0.104.1", "uvicorn==0.24.0", "sqlalchemy==2.0.23", "pymysql==1.1.0", "python-jose[cryptography]==3.3.0", "passlib[bcrypt]==1.7.4", "python-multipart==0.0.6", "pydantic[email]==2.4.2", "python-dotenv==1.0.0", "click==8.1.7",]
+[[project.authors]]
+name = "niuliangtao"
+email = "farfarfun@qq.com"
+
+[project.scripts]
+funuser = "funuser.cli:cli"
+
+[tool.setuptools]
+license-files = []
