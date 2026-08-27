@@ -4,7 +4,7 @@ version = "0.1.2"
 description = "User Management System"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = [ "click>=8.1.8", "fastapi>=0.115.12", "pymysql>=1.1.1", "sqlalchemy>=2.0.40", "uvicorn>=0.33.0",]
+dependencies = [ "click>=8.1.8", "fastapi>=0.115.12", "pymysql>=1.1.1", "sqlalchemy>=2.0.40", "uvicorn>=0.33.0", "python-jose[cryptography]>=3.3.0", "passlib[bcrypt]>=1.7.4", "bcrypt<4.1", "pydantic[email]>=2.4.2",]
 [[project.authors]]
 name = "niuliangtao"
 email = "farfarfun@qq.com"
@@ -14,3 +14,6 @@ funuser = "funuser.cli:cli"
 
 [tool.setuptools]
 license-files = []
+
+[dependency-groups]
+dev = [ "pytest>=8.0.0", "httpx>=0.27.0",]
