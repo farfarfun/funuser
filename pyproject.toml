@@ -1,6 +1,6 @@
 [project]
 name = "funuser"
-version = "0.1.2"
+version = "0.1.3"
 description = "User Management System"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -11,6 +11,10 @@ email = "farfarfun@qq.com"
 
 [project.scripts]
 funuser = "funuser.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.setuptools]
 license-files = []
