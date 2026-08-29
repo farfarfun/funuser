@@ -80,7 +80,10 @@ def test_app_is_fastapi_instance(app):
 
 
 def test_app_has_expected_routes(app):
-    paths = {route.path for route in app.routes}
+    # Walk the OpenAPI schema rather than app.routes directly: starlette's
+    # internal route-tree representation for included routers is not a
+    # stable public API and has changed across major versions.
+    paths = set(app.openapi()["paths"].keys())
     assert "/api/v1/register" in paths
     assert "/api/v1/login" in paths
     assert "/api/v1/users/me" in paths
