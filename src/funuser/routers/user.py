@@ -1,32 +1,35 @@
+from datetime import timedelta
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import Any
-from datetime import timedelta
 
-from ..database.database import get_db
-from ..models.user import User
-from ..schemas.user import UserCreate, UserResponse, UserUpdate, ChangePassword, Token
 from ..core.security import (
-    get_password_hash,
-    verify_password,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
     get_current_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
+    get_password_hash,
+    verify_password,
 )
+from ..database.database import get_db
+from ..models.user import User
+from ..schemas.user import ChangePassword, Token, UserCreate, UserResponse, UserUpdate
 
 router = APIRouter()
 
 
 @router.post("/register", response_model=UserResponse)
-def register(user: UserCreate, db: Session = Depends(get_db)) -> Any:
-    # Check if username exists
+def register(user: UserCreate, db: Annotated[Session, Depends(get_db)]) -> User:
+    """注册用户。
+
+    参数为注册字段和请求数据库会话；成功时返回新用户，用户名或邮箱重复时返回 400。
+    """
     if db.query(User).filter(User.username == user.username).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered",
         )
 
-    # Check if email exists
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
@@ -45,7 +48,10 @@ def register(user: UserCreate, db: Session = Depends(get_db)) -> Any:
 
 
 @router.post("/login", response_model=Token)
-def login(username: str, password: str, db: Session = Depends(get_db)) -> Any:
+def login(
+    username: str, password: str, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, str]:
+    """校验用户名和密码并返回访问令牌，凭据错误时返回 401。"""
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.password):
         raise HTTPException(
@@ -61,17 +67,21 @@ def login(username: str, password: str, db: Session = Depends(get_db)) -> Any:
 
 
 @router.get("/users/me", response_model=UserResponse)
-def read_users_me(current_user: User = Depends(get_current_user)) -> Any:
+def read_users_me(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """返回访问令牌对应的当前用户。"""
     return current_user
 
 
 @router.put("/users/me", response_model=UserResponse)
 def update_user_me(
     user_update: UserUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Any:
-    if user_update.email and user_update.email != current_user.email:
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    """更新当前用户的邮箱或手机号，邮箱重复时返回 400。"""
+    if user_update.email is not None and user_update.email != current_user.email:
         if db.query(User).filter(User.email == user_update.email).first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -79,7 +89,7 @@ def update_user_me(
             )
         current_user.email = user_update.email
 
-    if user_update.phone:
+    if user_update.phone is not None:
         current_user.phone = user_update.phone
 
     db.commit()
@@ -90,9 +100,10 @@ def update_user_me(
 @router.post("/users/me/change-password")
 def change_password(
     password_update: ChangePassword,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Any:
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    """校验旧密码后更新当前用户密码，旧密码错误时返回 400。"""
     if not verify_password(password_update.old_password, current_user.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect password"

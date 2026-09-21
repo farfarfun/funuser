@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLI_NAME="funuser"
+PACKAGE_NAME="funuser"
+PORT="${FUNUSER_PORT:-8000}"
+CONFIG_PATH="${FUNUSER_CONFIG_FILE:-}"
+
+usage() {
+  cat >&2 <<'EOF'
+用法：scripts/setup.sh <动作> [版本]
+
+服务：start | stop | restart | run | status
+安装：install-dev | install-prod [版本]
+发布：publish
+维护：upgrade [版本] | rollback <版本> | uninstall
+EOF
+}
+
+die() {
+  printf '错误：%s\n' "$*" >&2
+  exit 2
+}
+
+server_action() {
+  local action="$1"
+  local options=(--port "${PORT}")
+  if [[ -n "${CONFIG_PATH}" ]]; then
+    options+=(--config "${CONFIG_PATH}")
+  fi
+  if [[ "${action}" == "run" ]]; then
+    exec "${CLI_NAME}" server run "${options[@]}"
+  fi
+  "${CLI_NAME}" server "${action}" "${options[@]}"
+}
+
+install_prod() {
+  local version="${1:-}"
+  if [[ -z "${version}" ]] && python3 -m pip show "${PACKAGE_NAME}" >/dev/null 2>&1; then
+    printf '%s 已安装；未指定版本，不执行升级。\n' "${PACKAGE_NAME}"
+  elif [[ -n "${version}" ]]; then
+    python3 -m pip install "${PACKAGE_NAME}==${version}"
+  else
+    python3 -m pip install "${PACKAGE_NAME}"
+  fi
+}
+
+main() {
+  local action="${1:-}"
+  shift || true
+  case "${action}" in
+  start | stop | restart | run | status)
+    (( $# == 0 )) || die "${action} 不接受额外参数"
+    server_action "${action}"
+    ;;
+  install-dev)
+    (( $# == 0 )) || die "install-dev 不接受额外参数"
+    funbuild install
+    ;;
+  install-prod)
+    (( $# <= 1 )) || die "install-prod 最多接受一个版本号"
+    install_prod "${1:-}"
+    ;;
+  publish)
+    (( $# == 0 )) || die "publish 不接受额外参数"
+    funbuild build
+    ;;
+  upgrade)
+    (( $# <= 1 )) || die "upgrade 最多接受一个版本号"
+    "${CLI_NAME}" upgrade "$@"
+    ;;
+  rollback)
+    (( $# == 1 )) || die "rollback 必须指定版本号"
+    "${CLI_NAME}" rollback "$1"
+    ;;
+  uninstall)
+    (( $# == 0 )) || die "uninstall 不接受额外参数"
+    "${CLI_NAME}" uninstall
+    ;;
+  -h | --help | help)
+    usage
+    ;;
+  *)
+    usage
+    die "未知动作：${action:-<空>}"
+    ;;
+  esac
+}
+
+main "$@"

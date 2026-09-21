@@ -1,42 +1,55 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
 from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserBase(BaseModel):
+    """用户公开字段。"""
+
     username: str
     email: EmailStr
-    phone: Optional[str] = None
+    phone: str | None = None
 
 
 class UserCreate(UserBase):
+    """注册用户时接收的字段。"""
+
     password: str
 
 
 class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
+    """更新当前用户时允许修改的字段。"""
+
+    email: EmailStr | None = None
+    phone: str | None = None
 
 
 class ChangePassword(BaseModel):
+    """修改密码时接收的新旧密码。"""
+
     old_password: str
     new_password: str
 
 
 class UserResponse(UserBase):
+    """返回给客户端的用户信息。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     status: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
+    updated_at: datetime | None = None
 
 
 class Token(BaseModel):
+    """登录成功后返回的访问令牌。"""
+
     access_token: str
     token_type: str
 
 
 class TokenData(BaseModel):
+    """访问令牌中的用户标识。"""
+
     username: str

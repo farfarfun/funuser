@@ -1,266 +1,193 @@
-"""Lightweight smoke tests for funuser.
-
-funuser is a FastAPI + SQLAlchemy user management service. The source
-contains a hardcoded MySQL DSN (funuser.database.database.SQLALCHEMY_DATABASE_URL
-= "mysql+pymysql://root:root@localhost/funuser") and a hardcoded JWT secret
-(funuser.core.security.SECRET_KEY = "your-secret-key"). None of these tests
-open a real MySQL connection or start a live uvicorn server: the one place
-that would trigger a real connection attempt at import time
-(``funuser.main`` calls ``User.Base.metadata.create_all(bind=engine)`` at
-module scope) is patched out before import.
-"""
+"""funuser 配置、API、安全辅助函数和 CLI 测试。"""
 
 import subprocess
 import sys
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 
-# ---------------------------------------------------------------------------
-# 1. Import smoke tests
-# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def isolated_runtime(tmp_path_factory: pytest.TempPathFactory):
+    """把测试数据库、密钥和运行状态隔离到临时目录。"""
+    root = tmp_path_factory.mktemp("funuser")
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+    monkeypatch.setenv("FUN_SECRET_PATH", str(root / "secret"))
+    monkeypatch.setenv("FUNUSER_DATABASE_URL", f"sqlite:///{root / 'test.db'}")
+    monkeypatch.setenv("FUNUSER_SECRET_KEY", "test-only-secret-key")
+    yield
+    monkeypatch.undo()
 
 
-def test_import_top_level_package():
-    import funuser  # noqa: F401
+@pytest.fixture(scope="session")
+def client() -> TestClient:
+    """返回使用真实临时 SQLite 的测试客户端。"""
+    from funuser.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
 
 
-@pytest.mark.parametrize(
-    "module_name",
-    [
+def register(client: TestClient, username: str, email: str, password: str = "secret"):
+    """调用注册接口并返回响应。"""
+    return client.post(
+        "/api/v1/register",
+        json={"username": username, "email": email, "password": password},
+    )
+
+
+def login(client: TestClient, username: str, password: str = "secret"):
+    """调用登录接口并返回响应。"""
+    return client.post(
+        "/api/v1/login", params={"username": username, "password": password}
+    )
+
+
+def auth_header(client: TestClient, username: str, password: str = "secret"):
+    """返回指定测试用户的 Bearer 请求头。"""
+    token = login(client, username, password).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_import_public_modules() -> None:
+    """所有公开模块都可安全导入。"""
+    for module_name in (
+        "funuser",
         "funuser.cli",
-        "funuser.core",
+        "funuser.config",
         "funuser.core.security",
-        "funuser.database",
         "funuser.database.database",
-        "funuser.models",
         "funuser.models.user",
-        "funuser.schemas",
         "funuser.schemas.user",
-        "funuser.routers",
         "funuser.routers.user",
-    ],
-)
-def test_import_submodules(module_name):
-    """All obviously-public submodules should import without touching a real DB.
-
-    None of these modules perform I/O at import time: SQLAlchemy's
-    create_engine()/sessionmaker() are lazy and only connect when a query is
-    actually executed.
-    """
-    __import__(module_name)
+    ):
+        __import__(module_name)
 
 
-# ---------------------------------------------------------------------------
-# 2. funuser.main / FastAPI app smoke tests (DB layer mocked)
-# ---------------------------------------------------------------------------
+def test_config_formats_and_cli_priority(tmp_path: Path, monkeypatch) -> None:
+    """三种配置格式均可读取，环境变量优先于配置文件。"""
+    from funuser.config import database_url, load_config
+
+    toml_config = tmp_path / "config.toml"
+    toml_config.write_text("[server]\nport = 9001\n", encoding="utf-8")
+    assert load_config(toml_config)["server"]["port"] == 9001
+
+    json_config = tmp_path / "config.json"
+    json_config.write_text('{"server": {"port": 9002}}', encoding="utf-8")
+    assert load_config(json_config)["server"]["port"] == 9002
+
+    env_config = tmp_path / "config.env"
+    env_config.write_text("SERVER_PORT=9003\n", encoding="utf-8")
+    assert load_config(env_config)["server_port"] == "9003"
+
+    monkeypatch.setenv("FUNUSER_DATABASE_URL", "sqlite:///environment.db")
+    assert database_url(json_config) == "sqlite:///environment.db"
 
 
-@pytest.fixture(scope="module")
-def app():
-    """Import funuser.main with the startup DB-schema creation mocked out.
+def test_register_and_duplicate_boundaries(client: TestClient) -> None:
+    """注册成功，并拒绝重复用户名、重复邮箱和无效邮箱。"""
+    response = register(client, "alice", "alice@example.com")
+    assert response.status_code == 200
+    assert response.json()["username"] == "alice"
 
-    funuser/main.py runs ``user.Base.metadata.create_all(bind=engine)`` at
-    module import time, which would otherwise attempt a real connection to
-    the hardcoded MySQL server. We patch SQLAlchemy's create_all so import
-    succeeds without any real database.
-    """
-    sys.modules.pop("funuser.main", None)
-    with patch("funuser.models.user.Base.metadata.create_all") as mocked_create_all:
-        import funuser.main as main_module
-    assert mocked_create_all.called
-    return main_module.app
+    response = register(client, "alice", "alice2@example.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Username already registered"
 
+    response = register(client, "alice2", "alice@example.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
 
-def test_app_is_fastapi_instance(app):
-    from fastapi import FastAPI
-
-    assert isinstance(app, FastAPI)
+    response = register(client, "invalid", "not-an-email")
+    assert response.status_code == 422
 
 
-def test_app_has_expected_routes(app):
-    # Walk the OpenAPI schema rather than app.routes directly: starlette's
-    # internal route-tree representation for included routers is not a
-    # stable public API and has changed across major versions.
-    paths = set(app.openapi()["paths"].keys())
-    assert "/api/v1/register" in paths
-    assert "/api/v1/login" in paths
-    assert "/api/v1/users/me" in paths
+def test_login_and_current_user_boundaries(client: TestClient) -> None:
+    """登录与当前用户接口覆盖成功、错误密码和未认证路径。"""
+    assert register(client, "bob", "bob@example.com", "hunter2").status_code == 200
 
+    response = login(client, "bob", "hunter2")
+    assert response.status_code == 200
+    assert response.json()["token_type"] == "bearer"
 
-def test_register_endpoint_with_mocked_db(app):
-    """POST /api/v1/register with the DB session mocked out."""
-    from datetime import datetime, timezone
+    assert login(client, "bob", "wrong").status_code == 401
+    assert client.get("/api/v1/users/me").status_code == 401
 
-    from fastapi.testclient import TestClient
-
-    from funuser.database.database import get_db
-
-    mock_db = MagicMock()
-    # No existing user with this username/email.
-    mock_db.query.return_value.filter.return_value.first.return_value = None
-
-    def fake_refresh(obj):
-        obj.id = 1
-        obj.status = 1
-        obj.created_at = datetime.now(timezone.utc)
-        obj.updated_at = None
-
-    mock_db.refresh.side_effect = fake_refresh
-
-    def override_get_db():
-        yield mock_db
-
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        client = TestClient(app)
-        response = client.post(
-            "/api/v1/register",
-            json={
-                "username": "alice",
-                "email": "alice@example.com",
-                "password": "secret123",
-            },
-        )
-        assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["username"] == "alice"
-        assert data["email"] == "alice@example.com"
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_login_endpoint_with_mocked_db(app):
-    """POST /api/v1/login with the DB session mocked out."""
-    from fastapi.testclient import TestClient
-
-    from funuser.core.security import get_password_hash
-    from funuser.database.database import get_db
-    from funuser.models.user import User
-
-    fake_user = User(
-        username="bob",
-        email="bob@example.com",
-        password=get_password_hash("hunter2"),
+    response = client.get(
+        "/api/v1/users/me", headers=auth_header(client, "bob", "hunter2")
     )
-
-    mock_db = MagicMock()
-    mock_db.query.return_value.filter.return_value.first.return_value = fake_user
-
-    def override_get_db():
-        yield mock_db
-
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        client = TestClient(app)
-        response = client.post(
-            "/api/v1/login", params={"username": "bob", "password": "hunter2"}
-        )
-        assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["token_type"] == "bearer"
-        assert data["access_token"]
-    finally:
-        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["username"] == "bob"
 
 
-def test_read_users_me_endpoint_with_mocked_auth(app):
-    """GET /api/v1/users/me with both the DB session and current-user auth mocked."""
-    from datetime import datetime, timezone
+def test_update_user_normal_and_duplicate_email(client: TestClient) -> None:
+    """更新个人信息成功，并拒绝占用其他用户的邮箱。"""
+    assert register(client, "carol", "carol@example.com").status_code == 200
+    assert register(client, "dave", "dave@example.com").status_code == 200
+    headers = auth_header(client, "carol")
 
-    from fastapi.testclient import TestClient
-
-    from funuser.core.security import get_current_user
-    from funuser.database.database import get_db
-    from funuser.models.user import User
-
-    fake_user = User(
-        username="carol",
-        email="carol@example.com",
-        password="irrelevant-hash",
-        phone=None,
-        status=1,
+    response = client.put(
+        "/api/v1/users/me",
+        headers=headers,
+        json={"email": "carol2@example.com", "phone": "13800138000"},
     )
-    fake_user.id = 1
-    fake_user.created_at = datetime.now(timezone.utc)
-    fake_user.updated_at = None
+    assert response.status_code == 200
+    assert response.json()["phone"] == "13800138000"
 
-    app.dependency_overrides[get_db] = lambda: iter([MagicMock()])
-    app.dependency_overrides[get_current_user] = lambda: fake_user
-    try:
-        client = TestClient(app)
-        response = client.get("/api/v1/users/me")
-        assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["username"] == "carol"
-    finally:
-        app.dependency_overrides.clear()
+    response = client.put(
+        "/api/v1/users/me", headers=headers, json={"email": "dave@example.com"}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
 
 
-# ---------------------------------------------------------------------------
-# 3. Core security helpers (no DB involved)
-# ---------------------------------------------------------------------------
+def test_change_password_normal_and_wrong_old_password(client: TestClient) -> None:
+    """修改密码成功，并拒绝错误旧密码。"""
+    assert register(client, "erin", "erin@example.com", "old-secret").status_code == 200
+    headers = auth_header(client, "erin", "old-secret")
+
+    response = client.post(
+        "/api/v1/users/me/change-password",
+        headers=headers,
+        json={"old_password": "wrong", "new_password": "new-secret"},
+    )
+    assert response.status_code == 400
+
+    response = client.post(
+        "/api/v1/users/me/change-password",
+        headers=headers,
+        json={"old_password": "old-secret", "new_password": "new-secret"},
+    )
+    assert response.status_code == 200
+    assert login(client, "erin", "old-secret").status_code == 401
+    assert login(client, "erin", "new-secret").status_code == 200
 
 
-def test_password_hash_roundtrip():
-    from funuser.core.security import get_password_hash, verify_password
-
-    hashed = get_password_hash("my-plain-password")
-    assert hashed != "my-plain-password"
-    assert verify_password("my-plain-password", hashed) is True
-    assert verify_password("wrong-password", hashed) is False
-
-
-def test_create_access_token_and_decode():
+def test_password_hash_and_access_token() -> None:
+    """密码哈希可验证，签发的 JWT 可使用当前密钥解码。"""
     from jose import jwt
 
-    from funuser.core.security import ALGORITHM, SECRET_KEY, create_access_token
+    from funuser.config import secret_key
+    from funuser.core.security import (
+        ALGORITHM,
+        create_access_token,
+        get_password_hash,
+        verify_password,
+    )
 
-    token = create_access_token({"sub": "dave"})
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    assert payload["sub"] == "dave"
-    assert "exp" in payload
+    hashed = get_password_hash("plain-password")
+    assert verify_password("plain-password", hashed)
+    assert not verify_password("wrong-password", hashed)
 
-
-# ---------------------------------------------------------------------------
-# 4. Models / schemas construction (no DB I/O)
-# ---------------------------------------------------------------------------
-
-
-def test_user_model_construct():
-    from funuser.models.user import User
-
-    user = User(username="erin", email="erin@example.com", password="hashed")
-    assert user.username == "erin"
-    assert user.email == "erin@example.com"
+    token = create_access_token({"sub": "frank"})
+    assert jwt.decode(token, secret_key(), algorithms=[ALGORITHM])["sub"] == "frank"
 
 
-def test_user_schemas_construct():
-    from funuser.schemas.user import Token, UserCreate
-
-    created = UserCreate(username="frank", email="frank@example.com", password="pw")
-    assert created.username == "frank"
-
-    token = Token(access_token="abc", token_type="bearer")
-    assert token.token_type == "bearer"
-
-
-def test_user_schema_rejects_invalid_email():
-    from pydantic import ValidationError
-
-    from funuser.schemas.user import UserCreate
-
-    with pytest.raises(ValidationError):
-        UserCreate(username="grace", email="not-an-email", password="pw")
-
-
-# ---------------------------------------------------------------------------
-# 5. CLI entry point
-# ---------------------------------------------------------------------------
-
-
-def test_cli_group_help():
+def test_cli_exposes_service_and_package_commands() -> None:
+    """CLI 暴露服务分组和包管理命令。"""
     from click.testing import CliRunner
 
     from funuser.cli import cli
@@ -268,52 +195,70 @@ def test_cli_group_help():
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert "User Management System CLI" in result.output
+    for command in ("server", "upgrade", "rollback", "uninstall"):
+        assert command in result.output
+
+    result = runner.invoke(cli, ["server", "--help"])
+    assert result.exit_code == 0
+    for command in ("start", "run", "stop", "restart", "status"):
+        assert command in result.output
 
 
-@pytest.mark.parametrize("subcommand", ["start", "stop", "status"])
-def test_cli_subcommand_help(subcommand):
+def test_cli_server_options_prefer_flags(tmp_path: Path) -> None:
+    """显式服务参数优先于配置文件。"""
+    from funuser.cli import _server_settings
+
+    config = tmp_path / "config.toml"
+    config.write_text('[server]\nhost = "127.0.0.2"\nport = 9000\n', encoding="utf-8")
+    assert _server_settings(config, "0.0.0.0", 8080) == ("0.0.0.0", 8080)
+
+
+def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
+    """后台启动委派到已安装 CLI，停止操作按监听端口终止进程。"""
+    import funshell
     from click.testing import CliRunner
 
-    from funuser.cli import cli
+    from funuser import cli as cli_module
+
+    config = tmp_path / "config.toml"
+    config.write_text("[server]\nport = 8765\n", encoding="utf-8")
+    commands = []
+
+    def fake_popen(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(poll=lambda: None)
+
+    monkeypatch.setattr(cli_module, "_read_active_config", lambda: None)
+    monkeypatch.setattr(cli_module, "_read_pid", lambda _config: 321)
+    monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: True)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: "/bin/funuser")
+    monkeypatch.setattr(cli_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _seconds: None)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [subcommand, "--help"])
-    assert result.exit_code == 0
+    result = runner.invoke(cli_module.cli, ["server", "start", "--config", str(config)])
+    assert result.exit_code == 0, result.output
+    assert commands[0][:3] == ["/bin/funuser", "server", "run"]
+
+    states = iter((True, False))
+    monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: next(states))
+    monkeypatch.setattr(funshell, "kill_process", lambda **_kwargs: [(321, True)])
+    result = runner.invoke(
+        cli_module.cli,
+        ["server", "stop", "--config", str(config), "--port", "8765"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "已停止" in result.output
 
 
-def test_cli_console_script_help():
-    """The [project.scripts] entry point `funuser` should invoke cleanly with --help.
-
-    Run as `python -m funuser.cli --help` (equivalent entry point target)
-    inside the current interpreter/venv so this doesn't depend on the
-    console-script wrapper being on PATH.
-    """
+def test_cli_console_script_help() -> None:
+    """模块入口可显示命令帮助。"""
     result = subprocess.run(
         [sys.executable, "-m", "funuser.cli", "--help"],
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0
-    assert "User Management System CLI" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# 6. Things we explicitly do NOT smoke test against real infra
-# ---------------------------------------------------------------------------
-
-
-def test_real_mysql_connection_skipped():
-    pytest.skip(
-        "funuser.database.database 使用硬编码的 MySQL 凭据"
-        " (mysql+pymysql://root:root@localhost/funuser)，"
-        "本地/CI 环境没有真实 MySQL 服务，无法也不应该在冒烟测试中连接真实数据库，故跳过。"
-    )
-
-
-def test_live_uvicorn_server_skipped():
-    pytest.skip(
-        "funuser.cli 的 start 命令会调用 uvicorn.run() 启动真实监听的服务进程，"
-        "冒烟测试不应启动常驻服务，故跳过；改为通过 TestClient + mocked DB 覆盖路由逻辑。"
-    )
+    assert "server" in result.stdout
