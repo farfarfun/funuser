@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-pip install funuser
+uv tool install funuser
 ```
 
 ## 服务管理
@@ -13,23 +13,23 @@ pip install funuser
 安装后使用同一个具名 CLI 管理服务：
 
 ```bash
-funuser server start                 # 后台启动
-funuser server status                # 查看进程、端口和版本
-funuser server stop                  # 停止服务
-funuser server run --port 8080       # 前台运行
-funuser server restart               # 重启服务
+funuser server start prod                 # 后台启动正式包
+funuser server status prod                # 查看进程、端口和版本
+funuser server stop prod                  # 停止服务
+funuser server run prod --port 8080       # 前台运行正式包
+funuser server restart prod               # 重启服务
 ```
 
 仓库检出环境也提供统一入口：
 
 ```bash
 scripts/setup.sh install-dev
-scripts/setup.sh start
-scripts/setup.sh status
-scripts/setup.sh stop
+scripts/setup.sh start dev
+scripts/setup.sh status dev
+scripts/setup.sh stop dev
 ```
 
-`scripts/setup.sh install-prod [版本]` 从 PyPI 安装正式包，`publish` 通过 `funbuild build` 发布。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
+`scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；`start prod` 和 `run prod` 会拒绝源码或 editable 安装。`publish` 通过锁定在开发依赖中的 `funbuild` 发布。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
 
 ## 配置
 
@@ -39,19 +39,16 @@ scripts/setup.sh stop
 [server]
 host = "127.0.0.1"
 port = 8000
-
-[database]
-url = "mysql+pymysql://user:password@127.0.0.1/funuser"
 ```
 
-数据库地址和 JWT 密钥优先从 `FUNUSER_DATABASE_URL`、`FUNUSER_SECRET_KEY` 环境变量读取，也可存入 `funsecret`：
+数据库地址和 JWT 密钥只能通过 `FUNUSER_DATABASE_URL`、`FUNUSER_SECRET_KEY` 环境变量或 `funsecret` 提供，不能写入 TOML、JSON 或 `.env` 配置文件：
 
 ```bash
 funsecret write 'mysql+pymysql://user:password@127.0.0.1/funuser' funuser database url
 funsecret write 'replace-with-a-long-random-value' funuser security secret_key
 ```
 
-未配置数据库时，服务安全地使用 XDG 配置目录下的本地 SQLite；未配置 JWT 密钥时会生成随机值并写入 `funsecret`。PID 和日志保存在实际配置文件同目录。
+未配置数据库时，服务使用 XDG 配置目录下的本地 SQLite；未配置 JWT 密钥时会生成随机值并写入 `funsecret`。PID 和日志统一保存在服务工作目录的 `.run/` 中。
 
 ## 接口
 

@@ -8,7 +8,8 @@ CONFIG_PATH="${FUNUSER_CONFIG_FILE:-}"
 
 usage() {
   cat >&2 <<'EOF'
-用法：scripts/setup.sh <动作> [版本]
+用法：scripts/setup.sh <服务动作> <dev|prod>
+      scripts/setup.sh <安装或维护动作> [版本]
 
 服务：start | stop | restart | run | status
 安装：install-dev | install-prod [版本]
@@ -24,24 +25,32 @@ die() {
 
 server_action() {
   local action="$1"
+  local environment="$2"
   local options=(--port "${PORT}")
   if [[ -n "${CONFIG_PATH}" ]]; then
     options+=(--config "${CONFIG_PATH}")
   fi
   if [[ "${action}" == "run" ]]; then
-    exec "${CLI_NAME}" server run "${options[@]}"
+    if [[ "${environment}" == "dev" ]]; then
+      exec uv run "${CLI_NAME}" server run dev "${options[@]}"
+    fi
+    exec "${CLI_NAME}" server run prod "${options[@]}"
   fi
-  "${CLI_NAME}" server "${action}" "${options[@]}"
+  if [[ "${environment}" == "dev" ]]; then
+    uv run "${CLI_NAME}" server "${action}" dev "${options[@]}"
+  else
+    "${CLI_NAME}" server "${action}" prod "${options[@]}"
+  fi
 }
 
 install_prod() {
   local version="${1:-}"
-  if [[ -z "${version}" ]] && python3 -m pip show "${PACKAGE_NAME}" >/dev/null 2>&1; then
+  if [[ -z "${version}" ]] && uv tool list | grep -q "^${PACKAGE_NAME} "; then
     printf '%s 已安装；未指定版本，不执行升级。\n' "${PACKAGE_NAME}"
   elif [[ -n "${version}" ]]; then
-    python3 -m pip install "${PACKAGE_NAME}==${version}"
+    uv tool install "${PACKAGE_NAME}==${version}"
   else
-    python3 -m pip install "${PACKAGE_NAME}"
+    uv tool install "${PACKAGE_NAME}"
   fi
 }
 
@@ -50,12 +59,14 @@ main() {
   shift || true
   case "${action}" in
   start | stop | restart | run | status)
-    (( $# == 0 )) || die "${action} 不接受额外参数"
-    server_action "${action}"
+    (( $# == 1 )) || die "${action} 必须指定 dev 或 prod"
+    [[ "$1" == "dev" || "$1" == "prod" ]] || die "环境必须是 dev 或 prod"
+    server_action "${action}" "$1"
     ;;
   install-dev)
     (( $# == 0 )) || die "install-dev 不接受额外参数"
-    funbuild install
+    uv sync --group dev
+    uv run funbuild install
     ;;
   install-prod)
     (( $# <= 1 )) || die "install-prod 最多接受一个版本号"
@@ -63,7 +74,7 @@ main() {
     ;;
   publish)
     (( $# == 0 )) || die "publish 不接受额外参数"
-    funbuild build
+    uv run funbuild build
     ;;
   upgrade)
     (( $# <= 1 )) || die "upgrade 最多接受一个版本号"

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
-from importlib.metadata import version as package_version
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import NoReturn
 
@@ -14,7 +14,6 @@ import click
 from .config import (
     PACKAGE_NAME,
     config_value,
-    default_state_dir,
     load_config,
     resolve_config_path,
 )
@@ -29,7 +28,11 @@ def _fail(message: str) -> NoReturn:
 
 
 def _active_config_file() -> Path:
-    return default_state_dir() / "active-config"
+    return _runtime_dir() / "funuser.active-config"
+
+
+def _runtime_dir() -> Path:
+    return Path.cwd() / ".run"
 
 
 def _read_active_config() -> Path | None:
@@ -47,7 +50,7 @@ def _resolved_config(config: Path | None, *, use_active: bool = False) -> Path:
 
 
 def _state_paths(config: Path) -> tuple[Path, Path]:
-    return config.parent / "funuser.pid", config.parent / "funuser.log"
+    return _runtime_dir() / "funuser.pid", _runtime_dir() / "funuser.log"
 
 
 def _read_pid(config: Path) -> int | None:
@@ -66,6 +69,15 @@ def _pid_is_live(pid: int) -> bool:
         return not stat.exists() or stat.read_text().split()[2] != "Z"
     except (OSError, IndexError):
         return False
+
+
+def _pid_belongs_to_service(pid: int) -> bool:
+    """确认 PID 的命令行属于 funuser，避免误停复用 PID 的其他进程。"""
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+    except OSError:
+        return False
+    return b"funuser" in command
 
 
 def _write_state(config: Path, pid: int) -> None:
@@ -106,12 +118,33 @@ def _server_settings(
 
 
 def _version() -> str:
-    return package_version(PACKAGE_NAME)
+    return distribution(PACKAGE_NAME).version
+
+
+def _require_production_install() -> None:
+    """拒绝用源码树或 editable 安装冒充正式发行包。"""
+    try:
+        installed = distribution(PACKAGE_NAME)
+    except PackageNotFoundError:
+        _fail("prod 模式要求先安装 funuser 正式发行包")
+    direct_url = installed.read_text("direct_url.json") or ""
+    if '"editable": true' in direct_url:
+        _fail("prod 模式不能运行 editable 安装；请先安装正式发行包")
+    source_root = Path.cwd().resolve()
+    if (source_root / "pyproject.toml").is_file() and Path(
+        __file__
+    ).resolve().is_relative_to(source_root):
+        _fail("prod 模式不能从当前源码目录运行；请使用已安装的正式发行包")
 
 
 def _run_server(
-    config: Path | None, host: str | None, port: int | None, *, reload: bool = False
+    environment: str,
+    config: Path | None,
+    host: str | None,
+    port: int | None,
 ) -> None:
+    if environment == "prod":
+        _require_production_install()
     resolved = _resolved_config(config)
     resolved_host, resolved_port = _server_settings(resolved, host, port)
     existing = _read_pid(resolved)
@@ -127,13 +160,17 @@ def _run_server(
             "funuser.main:app",
             host=resolved_host,
             port=resolved_port,
-            reload=reload,
+            reload=environment == "dev",
         )
     finally:
         _clear_state(resolved)
 
 
-def _start_server(config: Path | None, host: str | None, port: int | None) -> None:
+def _start_server(
+    environment: str, config: Path | None, host: str | None, port: int | None
+) -> None:
+    if environment == "prod":
+        _require_production_install()
     active = _read_active_config()
     if active is not None:
         active_pid = _read_pid(active)
@@ -144,11 +181,16 @@ def _start_server(config: Path | None, host: str | None, port: int | None) -> No
     resolved = _resolved_config(config)
     _, resolved_port = _server_settings(resolved, host, port)
     _, log_file = _state_paths(resolved)
-    executable = shutil.which(PACKAGE_NAME)
-    if executable is None:
-        _fail("未找到已安装的 funuser 命令；请先安装软件包")
-
-    command = [executable, "server", "run", "--config", str(resolved)]
+    command = [
+        sys.executable,
+        "-m",
+        "funuser.cli",
+        "server",
+        "run",
+        environment,
+        "--config",
+        str(resolved),
+    ]
     if host is not None:
         command.extend(("--host", host))
     if port is not None:
@@ -179,12 +221,12 @@ def _stop_server(config: Path | None, port: int | None) -> None:
         click.echo("funuser 未在运行")
         return
 
-    _, resolved_port = _server_settings(resolved, None, port)
-    from funshell import kill_process
-
-    outcomes = kill_process(port=resolved_port, sig="TERM")
-    if not outcomes:
-        _fail(f"未找到监听端口 {resolved_port} 的 funuser 进程")
+    if not _pid_belongs_to_service(pid):
+        _fail(f"PID {pid} 不属于 funuser，拒绝停止")
+    try:
+        os.kill(pid, 15)
+    except OSError as error:
+        _fail(f"无法停止 funuser（pid {pid}）：{error}")
 
     deadline = time.monotonic() + STOP_TIMEOUT_SECONDS
     while _pid_is_live(pid):
@@ -207,10 +249,13 @@ def _status_server(config: Path | None, port: int | None) -> None:
         click.echo(f"未在运行（funuser@{_version()}）")
 
 
-def _run_pip(arguments: list[str]) -> None:
-    result = subprocess.run([sys.executable, "-m", "pip", *arguments], check=False)
+def _run_uv(arguments: list[str]) -> None:
+    executable = shutil.which("uv")
+    if executable is None:
+        _fail("未找到 uv；请先安装 uv")
+    result = subprocess.run([executable, *arguments], check=False)
     if result.returncode != 0:
-        _fail(f"pip 执行失败（退出码 {result.returncode}）")
+        _fail(f"uv 执行失败（退出码 {result.returncode}）")
 
 
 @click.group(no_args_is_help=True)
@@ -237,39 +282,50 @@ def _server_options(function):
 
 
 @server.command("run")
+@click.argument("environment", type=click.Choice(("dev", "prod")))
 @_server_options
-def server_run(host: str | None, port: int | None, config: Path | None) -> None:
+def server_run(
+    environment: str, host: str | None, port: int | None, config: Path | None
+) -> None:
     """在前台运行 API 服务。"""
-    _run_server(config, host, port)
+    _run_server(environment, config, host, port)
 
 
 @server.command("start")
+@click.argument("environment", type=click.Choice(("dev", "prod")))
 @_server_options
-def server_start(host: str | None, port: int | None, config: Path | None) -> None:
+def server_start(
+    environment: str, host: str | None, port: int | None, config: Path | None
+) -> None:
     """在后台启动 API 服务。"""
-    _start_server(config, host, port)
+    _start_server(environment, config, host, port)
 
 
 @server.command("stop")
+@click.argument("environment", type=click.Choice(("dev", "prod")))
 @click.option("--port", type=click.IntRange(1, 65535), help="监听端口")
 @click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
-def server_stop(port: int | None, config: Path | None) -> None:
+def server_stop(environment: str, port: int | None, config: Path | None) -> None:
     """停止后台 API 服务。"""
     _stop_server(config, port)
 
 
 @server.command("restart")
+@click.argument("environment", type=click.Choice(("dev", "prod")))
 @_server_options
-def server_restart(host: str | None, port: int | None, config: Path | None) -> None:
+def server_restart(
+    environment: str, host: str | None, port: int | None, config: Path | None
+) -> None:
     """停止后重新启动 API 服务。"""
     _stop_server(config, port)
-    _start_server(config, host, port)
+    _start_server(environment, config, host, port)
 
 
 @server.command("status")
+@click.argument("environment", type=click.Choice(("dev", "prod")))
 @click.option("--port", type=click.IntRange(1, 65535), help="监听端口")
 @click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
-def server_status(port: int | None, config: Path | None) -> None:
+def server_status(environment: str, port: int | None, config: Path | None) -> None:
     """显示 API 服务状态和已安装版本。"""
     _status_server(config, port)
 
@@ -279,44 +335,21 @@ def server_status(port: int | None, config: Path | None) -> None:
 def upgrade(version: str | None) -> None:
     """升级到最新版或指定版本。"""
     target = f"{PACKAGE_NAME}=={version}" if version else PACKAGE_NAME
-    _run_pip(["install", "--upgrade", target])
+    _run_uv(["tool", "install", "--upgrade", target])
 
 
 @cli.command("rollback")
 @click.argument("version")
 def rollback(version: str) -> None:
     """强制安装指定旧版本。"""
-    _run_pip(
-        ["install", "--upgrade", "--force-reinstall", f"{PACKAGE_NAME}=={version}"]
-    )
+    _run_uv(["tool", "install", "--force", f"{PACKAGE_NAME}=={version}"])
 
 
 @cli.command("uninstall")
 def uninstall() -> None:
     """停止服务后卸载 funuser。"""
     _stop_server(None, None)
-    _run_pip(["uninstall", "-y", PACKAGE_NAME])
-
-
-@cli.command("start", hidden=True, deprecated=True)
-@click.option("--host", default=DEFAULT_HOST)
-@click.option("--port", type=click.IntRange(1, 65535), default=DEFAULT_PORT)
-@click.option("--reload", is_flag=True)
-def legacy_start(host: str, port: int, reload: bool) -> None:
-    """兼容旧版前台启动命令；请改用 ``server run``。"""
-    _run_server(None, host, port, reload=reload)
-
-
-@cli.command("stop", hidden=True, deprecated=True)
-def legacy_stop() -> None:
-    """兼容旧版停止命令；请改用 ``server stop``。"""
-    _stop_server(None, None)
-
-
-@cli.command("status", hidden=True, deprecated=True)
-def legacy_status() -> None:
-    """兼容旧版状态命令；请改用 ``server status``。"""
-    _status_server(None, None)
+    _run_uv(["tool", "uninstall", PACKAGE_NAME])
 
 
 if __name__ == "__main__":

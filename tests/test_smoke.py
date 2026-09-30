@@ -87,6 +87,29 @@ def test_config_formats_and_cli_priority(tmp_path: Path, monkeypatch) -> None:
     assert database_url(json_config) == "sqlite:///environment.db"
 
 
+def test_credentials_are_not_read_from_config(tmp_path: Path, monkeypatch) -> None:
+    """数据库凭据和 JWT 密钥不能从普通配置文件读取。"""
+    from funuser import config as config_module
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[database]\nurl = "mysql://plain-text-password"\n'
+        '[security]\nsecret_key = "plain-text-key"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("FUNUSER_DATABASE_URL")
+    monkeypatch.delenv("FUNUSER_SECRET_KEY")
+    monkeypatch.setattr(
+        config_module,
+        "read_secret",
+        lambda *_args, **kwargs: kwargs.get("value"),
+    )
+
+    assert "plain-text-password" not in config_module.database_url(config)
+    generated = config_module.secret_key(config)
+    assert generated != "plain-text-key"
+
+
 def test_register_and_duplicate_boundaries(client: TestClient) -> None:
     """注册成功，并拒绝重复用户名、重复邮箱和无效邮箱。"""
     response = register(client, "alice", "alice@example.com")
@@ -213,9 +236,19 @@ def test_cli_server_options_prefer_flags(tmp_path: Path) -> None:
     assert _server_settings(config, "0.0.0.0", 8080) == ("0.0.0.0", 8080)
 
 
+def test_cli_service_environment_is_required() -> None:
+    """长期运行服务命令必须显式选择 dev 或 prod。"""
+    from click.testing import CliRunner
+
+    from funuser.cli import cli
+
+    result = CliRunner().invoke(cli, ["server", "start"])
+    assert result.exit_code != 0
+    assert "dev|prod" in result.output
+
+
 def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
-    """后台启动委派到已安装 CLI，停止操作按监听端口终止进程。"""
-    import funshell
+    """后台启动传递环境，停止操作只向记录且校验过的 PID 发信号。"""
     from click.testing import CliRunner
 
     from funuser import cli as cli_module
@@ -231,24 +264,47 @@ def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cli_module, "_read_active_config", lambda: None)
     monkeypatch.setattr(cli_module, "_read_pid", lambda _config: 321)
     monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: True)
-    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: "/bin/funuser")
+    monkeypatch.setattr(cli_module, "_pid_belongs_to_service", lambda _pid: True)
     monkeypatch.setattr(cli_module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cli_module.time, "sleep", lambda _seconds: None)
 
     runner = CliRunner()
-    result = runner.invoke(cli_module.cli, ["server", "start", "--config", str(config)])
-    assert result.exit_code == 0, result.output
-    assert commands[0][:3] == ["/bin/funuser", "server", "run"]
-
-    states = iter((True, False))
-    monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: next(states))
-    monkeypatch.setattr(funshell, "kill_process", lambda **_kwargs: [(321, True)])
     result = runner.invoke(
-        cli_module.cli,
-        ["server", "stop", "--config", str(config), "--port", "8765"],
+        cli_module.cli, ["server", "start", "dev", "--config", str(config)]
     )
     assert result.exit_code == 0, result.output
+    assert commands[0][:6] == [
+        sys.executable,
+        "-m",
+        "funuser.cli",
+        "server",
+        "run",
+        "dev",
+    ]
+
+    states = iter((True, False))
+    signals = []
+    monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: next(states))
+    monkeypatch.setattr(
+        cli_module.os, "kill", lambda pid, sig: signals.append((pid, sig))
+    )
+    result = runner.invoke(
+        cli_module.cli,
+        ["server", "stop", "dev", "--config", str(config), "--port", "8765"],
+    )
+    assert result.exit_code == 0, result.output
+    assert signals == [(321, 15)]
     assert "已停止" in result.output
+
+
+def test_runtime_files_use_dot_run(tmp_path: Path, monkeypatch) -> None:
+    """PID 和日志统一位于服务工作目录的 .run。"""
+    from funuser import cli as cli_module
+
+    monkeypatch.chdir(tmp_path)
+    pid_file, log_file = cli_module._state_paths(tmp_path / "elsewhere/config.toml")
+    assert pid_file == tmp_path / ".run/funuser.pid"
+    assert log_file == tmp_path / ".run/funuser.log"
 
 
 def test_cli_console_script_help() -> None:

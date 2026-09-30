@@ -78,11 +78,8 @@ def config_value(
 
 def database_url(path: Path | None = None) -> str:
     """读取数据库地址；缺省使用 XDG 目录下不含凭据的 SQLite。"""
-    config = load_config(path)
-    value = (
-        os.environ.get("FUNUSER_DATABASE_URL")
-        or config_value(config, "database", "url")
-        or read_secret("funuser", "database", "url")
+    value = os.environ.get("FUNUSER_DATABASE_URL") or read_secret(
+        "funuser", "database", "url"
     )
     if value:
         return str(value)
@@ -93,11 +90,8 @@ def database_url(path: Path | None = None) -> str:
 
 def secret_key(path: Path | None = None) -> str:
     """读取 JWT 密钥；未配置时生成并写入 funsecret。"""
-    config = load_config(path)
-    value = (
-        os.environ.get("FUNUSER_SECRET_KEY")
-        or config_value(config, "security", "secret_key")
-        or read_secret("funuser", "security", "secret_key")
+    value = os.environ.get("FUNUSER_SECRET_KEY") or read_secret(
+        "funuser", "security", "secret_key"
     )
     if value:
         return str(value)
