@@ -17,6 +17,7 @@ from .config import (
     load_config,
     resolve_config_path,
 )
+from .config import _ensure_private_dir as _ensure_private_runtime_dir
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -82,11 +83,13 @@ def _pid_belongs_to_service(pid: int) -> bool:
 
 def _write_state(config: Path, pid: int) -> None:
     pid_file, _ = _state_paths(config)
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_runtime_dir(pid_file.parent)
     pid_file.write_text(f"{pid}\n", encoding="utf-8")
+    os.chmod(pid_file, 0o600)
     active = _active_config_file()
-    active.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_runtime_dir(active.parent)
     active.write_text(f"{config}\n", encoding="utf-8")
+    os.chmod(active, 0o600)
 
 
 def _clear_state(config: Path) -> None:
@@ -195,7 +198,10 @@ def _start_server(
         command.extend(("--host", host))
     if port is not None:
         command.extend(("--port", str(port)))
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_runtime_dir(log_file.parent)
+    if not log_file.exists():
+        log_file.touch()
+    os.chmod(log_file, 0o600)
     with log_file.open("ab") as log:
         process = subprocess.Popen(
             command,

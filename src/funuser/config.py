@@ -17,9 +17,19 @@ PACKAGE_NAME = "funuser"
 
 
 def default_state_dir() -> Path:
-    """返回遵循 XDG 约定的默认配置与运行状态目录。"""
+    """返回遵循 XDG 约定的默认配置与运行状态目录。
+
+    目录可能承载本地 SQLite 数据库（含密码哈希）等敏感文件，调用方创建时
+    应显式收紧为 0700，不要只依赖进程 umask（参见 #595 先例）。
+    """
     root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return root / "farfarfun" / PACKAGE_NAME
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """创建目录并显式收紧为仅当前用户可读写执行（0700）。"""
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
 
 
 def default_config_path() -> Path:
@@ -84,7 +94,7 @@ def database_url(path: Path | None = None) -> str:
     if value:
         return str(value)
     state_dir = default_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(state_dir)
     return f"sqlite:///{state_dir / 'funuser.db'}"
 
 

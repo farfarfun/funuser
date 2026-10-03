@@ -42,7 +42,7 @@ def register(client: TestClient, username: str, email: str, password: str = "sec
 def login(client: TestClient, username: str, password: str = "secret"):
     """调用登录接口并返回响应。"""
     return client.post(
-        "/api/v1/login", params={"username": username, "password": password}
+        "/api/v1/login", json={"username": username, "password": password}
     )
 
 
@@ -144,6 +144,21 @@ def test_login_and_current_user_boundaries(client: TestClient) -> None:
     )
     assert response.status_code == 200
     assert response.json()["username"] == "bob"
+
+
+def test_login_rejects_query_string_credentials(client: TestClient) -> None:
+    """登录凭据必须是 JSON 请求体，不能作为 URL 查询参数传递（避免落入访问日志）。"""
+    assert register(client, "quinn", "quinn@example.com", "q-secret").status_code == 200
+
+    query_response = client.post(
+        "/api/v1/login", params={"username": "quinn", "password": "q-secret"}
+    )
+    assert query_response.status_code == 422
+
+    body_response = client.post(
+        "/api/v1/login", json={"username": "quinn", "password": "q-secret"}
+    )
+    assert body_response.status_code == 200
 
 
 def test_update_user_normal_and_duplicate_email(client: TestClient) -> None:
@@ -305,6 +320,31 @@ def test_runtime_files_use_dot_run(tmp_path: Path, monkeypatch) -> None:
     pid_file, log_file = cli_module._state_paths(tmp_path / "elsewhere/config.toml")
     assert pid_file == tmp_path / ".run/funuser.pid"
     assert log_file == tmp_path / ".run/funuser.log"
+
+
+def test_state_dir_and_pid_file_permissions_are_private(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """落盘的数据库目录与 PID/active-config 文件权限显式收紧，不依赖 umask。"""
+    import stat
+
+    from funuser import cli as cli_module
+    from funuser.config import database_url
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("FUNUSER_DATABASE_URL", raising=False)
+    database_url()
+    state_dir = tmp_path / "config" / "farfarfun" / "funuser"
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
+
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "config.toml"
+    cli_module._write_state(config, 999)
+    pid_file, _ = cli_module._state_paths(config)
+    assert stat.S_IMODE(pid_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(pid_file.parent.stat().st_mode) == 0o700
+    active = cli_module._active_config_file()
+    assert stat.S_IMODE(active.stat().st_mode) == 0o600
 
 
 def test_cli_console_script_help() -> None:

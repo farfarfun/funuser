@@ -17,6 +17,13 @@ class UserCreate(UserBase):
     password: str
 
 
+class UserLogin(BaseModel):
+    """登录时接收的字段（JSON 请求体，避免凭据出现在 URL 查询串/访问日志中）。"""
+
+    username: str
+    password: str
+
+
 class UserUpdate(BaseModel):
     """更新当前用户时允许修改的字段。"""
 

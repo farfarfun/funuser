@@ -13,7 +13,14 @@ from ..core.security import (
 )
 from ..database.database import get_db
 from ..models.user import User
-from ..schemas.user import ChangePassword, Token, UserCreate, UserResponse, UserUpdate
+from ..schemas.user import (
+    ChangePassword,
+    Token,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+    UserUpdate,
+)
 
 router = APIRouter()
 
@@ -49,11 +56,14 @@ def register(user: UserCreate, db: Annotated[Session, Depends(get_db)]) -> User:
 
 @router.post("/login", response_model=Token)
 def login(
-    username: str, password: str, db: Annotated[Session, Depends(get_db)]
+    credentials: UserLogin, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, str]:
-    """校验用户名和密码并返回访问令牌，凭据错误时返回 401。"""
-    user = db.query(User).filter(User.username == username).first()
-    if not user or not verify_password(password, user.password):
+    """校验用户名和密码并返回访问令牌，凭据错误时返回 401。
+
+    凭据必须通过 JSON 请求体传递，不能作为 URL 查询参数（会被记入访问日志/代理日志）。
+    """
+    user = db.query(User).filter(User.username == credentials.username).first()
+    if not user or not verify_password(credentials.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
