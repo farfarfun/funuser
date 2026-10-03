@@ -251,15 +251,25 @@ def test_cli_server_options_prefer_flags(tmp_path: Path) -> None:
     assert _server_settings(config, "0.0.0.0", 8080) == ("0.0.0.0", 8080)
 
 
-def test_cli_service_environment_is_required() -> None:
-    """长期运行服务命令必须显式选择 dev 或 prod。"""
+def test_cli_service_environment_is_required_except_status(monkeypatch) -> None:
+    """长期运行服务命令必须显式选择环境，status 可汇总所有环境。"""
     from click.testing import CliRunner
 
-    from funuser.cli import cli
+    from funuser import cli as cli_module
 
-    result = CliRunner().invoke(cli, ["server", "start"])
+    runner = CliRunner()
+    result = runner.invoke(cli_module.cli, ["server", "start"])
     assert result.exit_code != 0
     assert "dev|prod" in result.output
+    statuses = []
+    monkeypatch.setattr(
+        cli_module,
+        "_status_server",
+        lambda environment, config, port: statuses.append(environment),
+    )
+    result = runner.invoke(cli_module.cli, ["server", "status"])
+    assert result.exit_code == 0, result.output
+    assert statuses == ["dev", "prod"]
 
 
 def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
@@ -276,8 +286,8 @@ def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
         commands.append(command)
         return SimpleNamespace(poll=lambda: None)
 
-    monkeypatch.setattr(cli_module, "_read_active_config", lambda: None)
-    monkeypatch.setattr(cli_module, "_read_pid", lambda _config: 321)
+    monkeypatch.setattr(cli_module, "_read_active_config", lambda _environment: None)
+    monkeypatch.setattr(cli_module, "_read_pid", lambda _environment: 321)
     monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: True)
     monkeypatch.setattr(cli_module, "_pid_belongs_to_service", lambda _pid: True)
     monkeypatch.setattr(cli_module.subprocess, "Popen", fake_popen)
@@ -312,14 +322,40 @@ def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
     assert "已停止" in result.output
 
 
-def test_runtime_files_use_dot_run(tmp_path: Path, monkeypatch) -> None:
-    """PID 和日志统一位于服务工作目录的 .run。"""
+def test_cli_stop_uses_the_requested_environment(tmp_path: Path, monkeypatch) -> None:
+    """停止 prod 不得读取或停止 dev 的运行状态。"""
+    from click.testing import CliRunner
+
+    from funuser import cli as cli_module
+
+    config = tmp_path / "config.toml"
+    requested_environments = []
+    monkeypatch.setattr(
+        cli_module,
+        "_read_pid",
+        lambda environment: requested_environments.append(environment) or None,
+    )
+
+    result = CliRunner().invoke(
+        cli_module.cli, ["server", "stop", "prod", "--config", str(config)]
+    )
+    assert result.exit_code == 0, result.output
+    assert requested_environments == ["prod"]
+
+
+def test_runtime_files_use_environment_specific_dot_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PID 和日志统一位于服务工作目录的 .run，并按环境隔离。"""
     from funuser import cli as cli_module
 
     monkeypatch.chdir(tmp_path)
-    pid_file, log_file = cli_module._state_paths(tmp_path / "elsewhere/config.toml")
-    assert pid_file == tmp_path / ".run/funuser.pid"
-    assert log_file == tmp_path / ".run/funuser.log"
+    dev_pid, dev_log = cli_module._state_paths("dev")
+    prod_pid, prod_log = cli_module._state_paths("prod")
+    assert dev_pid == tmp_path / ".run/funuser-dev.pid"
+    assert dev_log == tmp_path / ".run/funuser-dev.log"
+    assert prod_pid == tmp_path / ".run/funuser-prod.pid"
+    assert prod_log == tmp_path / ".run/funuser-prod.log"
 
 
 def test_state_dir_and_pid_file_permissions_are_private(
@@ -339,11 +375,11 @@ def test_state_dir_and_pid_file_permissions_are_private(
 
     monkeypatch.chdir(tmp_path)
     config = tmp_path / "config.toml"
-    cli_module._write_state(config, 999)
-    pid_file, _ = cli_module._state_paths(config)
+    cli_module._write_state("dev", config, 999)
+    pid_file, _ = cli_module._state_paths("dev")
     assert stat.S_IMODE(pid_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(pid_file.parent.stat().st_mode) == 0o700
-    active = cli_module._active_config_file()
+    active = cli_module._active_config_file("dev")
     assert stat.S_IMODE(active.stat().st_mode) == 0o600
 
 

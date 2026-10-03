@@ -14,7 +14,8 @@ uv tool install funuser
 
 ```bash
 funuser server start prod                 # 后台启动正式包
-funuser server status prod                # 查看进程、端口和版本
+funuser server status                     # 非交互地汇总 dev、prod 状态
+funuser server status prod                # 只查看正式环境
 funuser server stop prod                  # 停止服务
 funuser server run prod --port 8080       # 前台运行正式包
 funuser server restart prod               # 重启服务
@@ -24,12 +25,40 @@ funuser server restart prod               # 重启服务
 
 ```bash
 scripts/setup.sh install-dev
+scripts/setup.sh run dev
 scripts/setup.sh start dev
-scripts/setup.sh status dev
+scripts/setup.sh status                   # 汇总 dev、prod 状态
 scripts/setup.sh stop dev
+scripts/setup.sh restart dev
 ```
 
-`scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；`start prod` 和 `run prod` 会拒绝源码或 editable 安装。`publish` 通过锁定在开发依赖中的 `funbuild` 发布。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
+`dev` 使用仓库依赖并开启自动重载，`prod` 只运行已安装的正式包。`start` 在后台运行，`run` 在前台运行，`stop`、`restart` 和带环境参数的 `status` 只操作目标环境；运行状态分别保存在仓库根目录的 `.run/funuser-dev.*` 与 `.run/funuser-prod.*`。`scripts/setup.sh` 可从任意工作目录调用，并始终以脚本所在仓库为工作目录。
+
+`scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；`start prod` 和 `run prod` 会拒绝源码或 editable 安装。`scripts/setup.sh publish` 调用 `funbuild build` 的完整发布流程。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
+
+## 最小示例
+
+在一个终端启动开发服务：
+
+```bash
+scripts/setup.sh run dev
+```
+
+在另一个终端注册、登录并访问受保护接口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","email":"alice@example.com","password":"secret"}'
+
+TOKEN=$(curl -sS -X POST http://127.0.0.1:8000/api/v1/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"secret"}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+
+curl http://127.0.0.1:8000/api/v1/users/me \
+  -H "Authorization: Bearer ${TOKEN}"
+```
 
 ## 配置
 
@@ -48,7 +77,7 @@ funsecret write 'mysql+pymysql://user:password@127.0.0.1/funuser' funuser databa
 funsecret write 'replace-with-a-long-random-value' funuser security secret_key
 ```
 
-未配置数据库时，服务使用 XDG 配置目录下的本地 SQLite；未配置 JWT 密钥时会生成随机值并写入 `funsecret`。PID 和日志统一保存在服务工作目录的 `.run/` 中。
+未配置数据库时，服务使用 XDG 配置目录下的本地 SQLite；未配置 JWT 密钥时会生成随机值并写入 `funsecret`。
 
 ## 接口
 
@@ -59,6 +88,18 @@ funsecret write 'replace-with-a-long-random-value' funuser security secret_key
 - `POST /api/v1/users/me/change-password`：修改密码。
 
 服务启动后可访问 `/docs` 查看交互式 API 文档。
+
+## 开发与发布
+
+```bash
+uv sync --group dev
+uv run pytest -q
+uv run ruff check .
+uv run ruff format --check .
+uv run funbuild install  # 本地构建并安装校验，不发布
+uv build                 # 只构建分发产物
+scripts/setup.sh publish # 完整发布流程：版本、构建、安装校验、发布、推送和标签
+```
 
 ---
 

@@ -28,34 +28,39 @@ def _fail(message: str) -> NoReturn:
     raise click.ClickException(message)
 
 
-def _active_config_file() -> Path:
-    return _runtime_dir() / "funuser.active-config"
+def _active_config_file(environment: str) -> Path:
+    return _runtime_dir() / f"funuser-{environment}.active-config"
 
 
 def _runtime_dir() -> Path:
     return Path.cwd() / ".run"
 
 
-def _read_active_config() -> Path | None:
+def _read_active_config(environment: str) -> Path | None:
     try:
-        value = _active_config_file().read_text(encoding="utf-8").strip()
+        value = _active_config_file(environment).read_text(encoding="utf-8").strip()
     except OSError:
         return None
     return Path(value) if value else None
 
 
-def _resolved_config(config: Path | None, *, use_active: bool = False) -> Path:
+def _resolved_config(
+    config: Path | None, environment: str, *, use_active: bool = False
+) -> Path:
     if config is None and use_active:
-        config = _read_active_config()
+        config = _read_active_config(environment)
     return resolve_config_path(config)
 
 
-def _state_paths(config: Path) -> tuple[Path, Path]:
-    return _runtime_dir() / "funuser.pid", _runtime_dir() / "funuser.log"
+def _state_paths(environment: str) -> tuple[Path, Path]:
+    return (
+        _runtime_dir() / f"funuser-{environment}.pid",
+        _runtime_dir() / f"funuser-{environment}.log",
+    )
 
 
-def _read_pid(config: Path) -> int | None:
-    pid_file, _ = _state_paths(config)
+def _read_pid(environment: str) -> int | None:
+    pid_file, _ = _state_paths(environment)
     try:
         pid = int(pid_file.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -81,22 +86,22 @@ def _pid_belongs_to_service(pid: int) -> bool:
     return b"funuser" in command
 
 
-def _write_state(config: Path, pid: int) -> None:
-    pid_file, _ = _state_paths(config)
+def _write_state(environment: str, config: Path, pid: int) -> None:
+    pid_file, _ = _state_paths(environment)
     _ensure_private_runtime_dir(pid_file.parent)
     pid_file.write_text(f"{pid}\n", encoding="utf-8")
     os.chmod(pid_file, 0o600)
-    active = _active_config_file()
+    active = _active_config_file(environment)
     _ensure_private_runtime_dir(active.parent)
     active.write_text(f"{config}\n", encoding="utf-8")
     os.chmod(active, 0o600)
 
 
-def _clear_state(config: Path) -> None:
-    pid_file, _ = _state_paths(config)
+def _clear_state(environment: str, config: Path) -> None:
+    pid_file, _ = _state_paths(environment)
     pid_file.unlink(missing_ok=True)
-    active = _active_config_file()
-    if _read_active_config() == config:
+    active = _active_config_file(environment)
+    if _read_active_config(environment) == config:
         active.unlink(missing_ok=True)
 
 
@@ -148,14 +153,14 @@ def _run_server(
 ) -> None:
     if environment == "prod":
         _require_production_install()
-    resolved = _resolved_config(config)
+    resolved = _resolved_config(config, environment)
     resolved_host, resolved_port = _server_settings(resolved, host, port)
-    existing = _read_pid(resolved)
+    existing = _read_pid(environment)
     if existing is not None and existing != os.getpid() and _pid_is_live(existing):
         _fail(f"funuser 已在运行（pid {existing}）")
 
     os.environ["FUNUSER_CONFIG_FILE"] = str(resolved)
-    _write_state(resolved, os.getpid())
+    _write_state(environment, resolved, os.getpid())
     try:
         import uvicorn
 
@@ -166,7 +171,7 @@ def _run_server(
             reload=environment == "dev",
         )
     finally:
-        _clear_state(resolved)
+        _clear_state(environment, resolved)
 
 
 def _start_server(
@@ -174,16 +179,16 @@ def _start_server(
 ) -> None:
     if environment == "prod":
         _require_production_install()
-    active = _read_active_config()
+    active = _read_active_config(environment)
     if active is not None:
-        active_pid = _read_pid(active)
+        active_pid = _read_pid(environment)
         if active_pid is not None and _pid_is_live(active_pid):
             _fail(f"funuser 已在运行（pid {active_pid}）")
-        _clear_state(active)
+        _clear_state(environment, active)
 
-    resolved = _resolved_config(config)
+    resolved = _resolved_config(config, environment)
     _, resolved_port = _server_settings(resolved, host, port)
-    _, log_file = _state_paths(resolved)
+    _, log_file = _state_paths(environment)
     command = [
         sys.executable,
         "-m",
@@ -212,18 +217,18 @@ def _start_server(
         )
 
     time.sleep(1)
-    pid = _read_pid(resolved)
+    pid = _read_pid(environment)
     if process.poll() is not None or pid is None or not _pid_is_live(pid):
-        _clear_state(resolved)
+        _clear_state(environment, resolved)
         _fail(f"funuser 启动失败，请查看日志：{log_file}")
     click.echo(f"funuser 已启动（pid {pid}，端口 {resolved_port}，日志 {log_file}）")
 
 
-def _stop_server(config: Path | None, port: int | None) -> None:
-    resolved = _resolved_config(config, use_active=True)
-    pid = _read_pid(resolved)
+def _stop_server(environment: str, config: Path | None, port: int | None) -> None:
+    resolved = _resolved_config(config, environment, use_active=True)
+    pid = _read_pid(environment)
     if pid is None or not _pid_is_live(pid):
-        _clear_state(resolved)
+        _clear_state(environment, resolved)
         click.echo("funuser 未在运行")
         return
 
@@ -239,20 +244,22 @@ def _stop_server(config: Path | None, port: int | None) -> None:
         if time.monotonic() >= deadline:
             _fail(f"funuser 在 {STOP_TIMEOUT_SECONDS}s 内未退出（pid {pid}）")
         time.sleep(0.2)
-    _clear_state(resolved)
+    _clear_state(environment, resolved)
     click.echo("funuser 已停止")
 
 
-def _status_server(config: Path | None, port: int | None) -> None:
-    resolved = _resolved_config(config, use_active=True)
-    pid = _read_pid(resolved)
+def _status_server(environment: str, config: Path | None, port: int | None) -> None:
+    resolved = _resolved_config(config, environment, use_active=True)
+    pid = _read_pid(environment)
     _, resolved_port = _server_settings(resolved, None, port)
     if pid is not None and _pid_is_live(pid):
-        click.echo(f"运行中（funuser@{_version()}，pid {pid}，端口 {resolved_port}）")
+        click.echo(
+            f"{environment}: 运行中（funuser@{_version()}，pid {pid}，端口 {resolved_port}）"
+        )
     elif pid is not None:
-        click.echo(f"PID 文件已失效（pid {pid}，funuser@{_version()}）")
+        click.echo(f"{environment}: PID 文件已失效（pid {pid}，funuser@{_version()}）")
     else:
-        click.echo(f"未在运行（funuser@{_version()}）")
+        click.echo(f"{environment}: 未在运行（funuser@{_version()}）")
 
 
 def _run_uv(arguments: list[str]) -> None:
@@ -313,7 +320,7 @@ def server_start(
 @click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
 def server_stop(environment: str, port: int | None, config: Path | None) -> None:
     """停止后台 API 服务。"""
-    _stop_server(config, port)
+    _stop_server(environment, config, port)
 
 
 @server.command("restart")
@@ -323,17 +330,21 @@ def server_restart(
     environment: str, host: str | None, port: int | None, config: Path | None
 ) -> None:
     """停止后重新启动 API 服务。"""
-    _stop_server(config, port)
+    _stop_server(environment, config, port)
     _start_server(environment, config, host, port)
 
 
 @server.command("status")
-@click.argument("environment", type=click.Choice(("dev", "prod")))
+@click.argument("environment", type=click.Choice(("dev", "prod")), required=False)
 @click.option("--port", type=click.IntRange(1, 65535), help="监听端口")
 @click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
-def server_status(environment: str, port: int | None, config: Path | None) -> None:
+def server_status(
+    environment: str | None, port: int | None, config: Path | None
+) -> None:
     """显示 API 服务状态和已安装版本。"""
-    _status_server(config, port)
+    environments = (environment,) if environment else ("dev", "prod")
+    for target in environments:
+        _status_server(target, config, port)
 
 
 @cli.command("upgrade")
@@ -354,7 +365,8 @@ def rollback(version: str) -> None:
 @cli.command("uninstall")
 def uninstall() -> None:
     """停止服务后卸载 funuser。"""
-    _stop_server(None, None)
+    for environment in ("dev", "prod"):
+        _stop_server(environment, None, None)
     _run_uv(["tool", "uninstall", PACKAGE_NAME])
 
 
