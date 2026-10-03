@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPOSITORY_ROOT}"
+
 CLI_NAME="funuser"
 PACKAGE_NAME="funuser"
 PORT="${FUNUSER_PORT:-8000}"
@@ -8,7 +12,7 @@ CONFIG_PATH="${FUNUSER_CONFIG_FILE:-}"
 
 usage() {
   cat >&2 <<'EOF'
-用法：scripts/setup.sh <服务动作> <dev|prod>
+用法：scripts/setup.sh <服务动作> [dev|prod]
       scripts/setup.sh <安装或维护动作> [版本]
 
 服务：start | stop | restart | run | status
@@ -25,7 +29,7 @@ die() {
 
 server_action() {
   local action="$1"
-  local environment="$2"
+  local environment="${2:-}"
   local options=(--port "${PORT}")
   if [[ -n "${CONFIG_PATH}" ]]; then
     options+=(--config "${CONFIG_PATH}")
@@ -35,6 +39,10 @@ server_action() {
       exec uv run "${CLI_NAME}" server run dev "${options[@]}"
     fi
     exec "${CLI_NAME}" server run prod "${options[@]}"
+  fi
+  if [[ "${action}" == "status" && -z "${environment}" ]]; then
+    uv run "${CLI_NAME}" server status "${options[@]}"
+    return
   fi
   if [[ "${environment}" == "dev" ]]; then
     uv run "${CLI_NAME}" server "${action}" dev "${options[@]}"
@@ -59,9 +67,13 @@ main() {
   shift || true
   case "${action}" in
   start | stop | restart | run | status)
-    (( $# == 1 )) || die "${action} 必须指定 dev 或 prod"
-    [[ "$1" == "dev" || "$1" == "prod" ]] || die "环境必须是 dev 或 prod"
-    server_action "${action}" "$1"
+    if [[ "${action}" == "status" && $# == 0 ]]; then
+      server_action "${action}"
+    else
+      (( $# == 1 )) || die "${action} 必须指定 dev 或 prod"
+      [[ "$1" == "dev" || "$1" == "prod" ]] || die "环境必须是 dev 或 prod"
+      server_action "${action}" "$1"
+    fi
     ;;
   install-dev)
     (( $# == 0 )) || die "install-dev 不接受额外参数"
