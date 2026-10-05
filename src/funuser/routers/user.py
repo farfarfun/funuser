@@ -10,6 +10,7 @@ from ..core.security import (
     get_current_user,
     get_password_hash,
     verify_password,
+    verify_password_or_dummy,
 )
 from ..database.database import get_db
 from ..models.user import User
@@ -61,9 +62,16 @@ def login(
     """校验用户名和密码并返回访问令牌，凭据错误时返回 401。
 
     凭据必须通过 JSON 请求体传递，不能作为 URL 查询参数（会被记入访问日志/代理日志）。
+
+    用户名不存在和密码错误返回完全相同的状态码、错误信息，且都会执行一次
+    bcrypt 校验（见 `verify_password_or_dummy`），耗时也保持一致，避免被用来
+    枚举已注册用户名。
     """
     user = db.query(User).filter(User.username == credentials.username).first()
-    if not user or not verify_password(credentials.password, user.password):
+    password_matches = verify_password_or_dummy(
+        credentials.password, user.password if user else None
+    )
+    if not user or not password_matches:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

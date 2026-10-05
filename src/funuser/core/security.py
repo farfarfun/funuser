@@ -17,10 +17,26 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+# 用户名不存在时仍要跑一次完整的哈希校验，耗时与真实用户对齐，避免登录接口
+# 通过响应耗时差异被用来枚举已注册用户名（真实哈希校验走 bcrypt，耗时远高于
+# 一次字符串比较或提前返回）。这个哈希对应的明文从不会被使用，不是真实凭据。
+_UNKNOWN_USER_PASSWORD_HASH = pwd_context.hash("funuser-timing-attack-mitigation")
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """验证明文密码是否与已存储的哈希匹配。"""
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def verify_password_or_dummy(plain_password: str, hashed_password: str | None) -> bool:
+    """验证密码；`hashed_password` 为空（用户不存在）时仍执行一次等耗时的哈希校验。
+
+    用于登录接口：无论用户名是否存在都触发同等开销的 bcrypt 运算，
+    防止凭据校验的响应耗时差异被用来枚举已注册用户名。
+    """
+    return pwd_context.verify(
+        plain_password, hashed_password or _UNKNOWN_USER_PASSWORD_HASH
+    )
 
 
 def get_password_hash(password: str) -> str:

@@ -9,10 +9,15 @@
 - 开发与发布工具改由 `uv` 和锁定的 `funbuild` 管理。
 - 登录改为通过 JSON 请求体传递用户名密码，不再作为 URL 查询参数（避免凭据被记入访问日志/代理日志）。
 - 本地 SQLite 数据库目录、`.run/` 下的 PID、active-config、日志文件落盘时显式收紧为目录 0700、文件 0600，不再依赖进程 umask。
+- `scripts/setup.sh` 改为基于脚本自身位置解析仓库根目录，不再依赖调用时的当前工作目录。
+- `server status` 支持不带环境参数非交互运行，默认汇总 `dev`/`prod` 两个环境；`stop`/`restart`/`status` 按环境分别维护 PID、日志和 active-config，`stop prod` 不会再误停 `dev` 服务。
+- `/login` 校验用户名不存在时也执行一次等耗时的密码哈希比对，避免通过响应耗时差异枚举已注册用户名。
 
 ### 变更
 
 - 更新需求文档中的 FastAPI 技术栈和实际公开 API。
+- `pyproject.toml` 的 `description` 改为据实描述的中文一句话说明（FastAPI + JWT 用户管理服务）。
+- README 补充从启动服务到注册/登录/访问受保护接口的最小可执行示例，以及测试、lint、构建、发布的完整开发命令。
 
 ## 0.1.3 - 2026-09-21
 

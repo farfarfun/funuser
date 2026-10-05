@@ -146,6 +146,32 @@ def test_login_and_current_user_boundaries(client: TestClient) -> None:
     assert response.json()["username"] == "bob"
 
 
+def test_login_unknown_username_still_runs_password_hash_check(
+    client: TestClient, monkeypatch
+) -> None:
+    """用户名不存在时也要执行一次哈希校验，错误信息与耗时和密码错误保持一致。
+
+    防止 /login 通过「是否触发 bcrypt 校验」的响应耗时差异被用来枚举用户名
+    （对照：仅凭 `not user or ...` 短路会让未注册用户名明显更快返回）。
+    """
+    from funuser.core import security as security_module
+
+    calls: list[str | None] = []
+    original = security_module.pwd_context.verify
+
+    def spy(plain_password: str, hashed_password: str) -> bool:
+        calls.append(hashed_password)
+        return original(plain_password, hashed_password)
+
+    monkeypatch.setattr(security_module.pwd_context, "verify", spy)
+
+    missing_response = login(client, "no-such-user", "whatever")
+    assert missing_response.status_code == 401
+    assert missing_response.json()["detail"] == "Incorrect username or password"
+    assert len(calls) == 1
+    assert calls[0] == security_module._UNKNOWN_USER_PASSWORD_HASH
+
+
 def test_login_rejects_query_string_credentials(client: TestClient) -> None:
     """登录凭据必须是 JSON 请求体，不能作为 URL 查询参数传递（避免落入访问日志）。"""
     assert register(client, "quinn", "quinn@example.com", "q-secret").status_code == 200
