@@ -25,23 +25,23 @@ funuser server restart prod               # 重启服务
 
 ```bash
 scripts/setup.sh install-dev
-scripts/setup.sh run dev
-scripts/setup.sh start dev
-scripts/setup.sh status                   # 汇总 dev、prod 状态
-scripts/setup.sh stop dev
-scripts/setup.sh restart dev
+scripts/setup.sh run
+scripts/setup.sh start
+scripts/setup.sh status
+scripts/setup.sh stop
+scripts/setup.sh restart
 ```
 
-`dev` 使用仓库依赖并开启自动重载，`prod` 只运行已安装的正式包。`start` 在后台运行，`run` 在前台运行，`stop`、`restart` 和带环境参数的 `status` 只操作目标环境；运行状态分别保存在仓库根目录的 `.run/funuser-dev.*` 与 `.run/funuser-prod.*`。`scripts/setup.sh` 可从任意工作目录调用，并始终以脚本所在仓库为工作目录。
+`dev` 使用仓库依赖并开启自动重载，`prod` 只运行已安装的正式包。`start` 在后台运行，`run` 在前台运行，`stop`、`restart` 和带环境参数的 `status` 只操作目标环境；运行状态分别保存在仓库根目录的 `.run/funuser-dev.*` 与 `.run/funuser-prod.*`。`scripts/setup.sh` 的服务动作不带环境参数，始终转发给已安装 CLI 的 `prod` 实例；开发调试请直接使用 `funuser server <动作> dev`。脚本可从任意工作目录调用，并始终以脚本所在仓库为工作目录。
 
-`scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；`start prod` 和 `run prod` 会拒绝源码或 editable 安装。`scripts/setup.sh publish` 调用 `funbuild build` 的完整发布流程。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
+`scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；脚本的 `start` 和 `run` 只运行正式安装包，拒绝源码或 editable 安装。`scripts/setup.sh publish` 调用 `funbuild build` 的完整发布流程。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
 
 ## 最小示例
 
-在一个终端启动开发服务：
+在一个终端启动服务：
 
 ```bash
-scripts/setup.sh run dev
+scripts/setup.sh run
 ```
 
 在另一个终端注册、登录并访问受保护接口：

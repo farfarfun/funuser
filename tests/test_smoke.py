@@ -1,5 +1,6 @@
 """funuser 配置、API、安全辅助函数和 CLI 测试。"""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -420,3 +421,46 @@ def test_cli_console_script_help() -> None:
     )
     assert result.returncode == 0
     assert "server" in result.stdout
+
+
+def test_setup_service_actions_use_installed_cli(tmp_path: Path) -> None:
+    """生命周期脚本不接受环境参数，且不通过仓库环境运行服务。"""
+    executable = tmp_path / "funuser"
+    arguments = tmp_path / "arguments"
+    executable.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FUNUSER_ARGUMENTS"\n',
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    environment = {
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "FUNUSER_ARGUMENTS": str(arguments),
+        "FUNUSER_PORT": "8123",
+    }
+    script = Path(__file__).parents[1] / "scripts" / "setup.sh"
+
+    result = subprocess.run(
+        [str(script), "start"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert arguments.read_text(encoding="utf-8").splitlines() == [
+        "server",
+        "start",
+        "prod",
+        "--port",
+        "8123",
+    ]
+
+    result = subprocess.run(
+        [str(script), "start", "dev"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "不接受额外参数" in result.stderr

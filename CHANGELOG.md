@@ -4,6 +4,7 @@
 
 ### 修复
 
+- `scripts/setup.sh` 的服务动作不再接受 `dev`/`prod` 参数，并且只转发到已安装 `funuser` CLI 的正式服务实例。
 - 凭据只允许来自环境变量或 `funsecret`，服务操作显式区分 `dev`/`prod`。
 - 运行文件统一写入 `.run/`，停止服务时校验并直接使用记录的 PID。
 - 开发与发布工具改由 `uv` 和锁定的 `funbuild` 管理。
