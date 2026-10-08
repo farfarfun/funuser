@@ -147,6 +147,22 @@ def test_login_and_current_user_boundaries(client: TestClient) -> None:
     assert response.json()["username"] == "bob"
 
 
+def test_disabled_user_cannot_log_in(client: TestClient) -> None:
+    """status=0 的账户即使凭据正确也不得签发新的访问令牌。"""
+    from funuser.database.database import SessionLocal
+    from funuser.models.user import User
+
+    assert register(client, "disabled", "disabled@example.com").status_code == 200
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "disabled").one()
+        user.status = 0
+        db.commit()
+
+    response = login(client, "disabled")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User is disabled"
+
+
 def test_login_unknown_username_still_runs_password_hash_check(
     client: TestClient, monkeypatch
 ) -> None:
