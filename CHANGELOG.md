@@ -7,13 +7,17 @@
 - 禁用状态（`User.status = 0`）的账户不再能通过登录签发新令牌
 - `scripts/setup.sh` 的服务动作不再接受 `dev`/`prod` 参数，并且只转发到已安装 `funuser` CLI 的正式服务实例。
 - 凭据只允许来自环境变量或 `funsecret`，服务操作显式区分 `dev`/`prod`。
-- 运行文件统一写入 `.run/`，停止服务时校验并直接使用记录的 PID。
+- 运行文件统一写入 XDG 状态目录下的 `.run/`；启动与状态检查会验证 PID 属于 funuser，自动清理陈旧状态而不会将复用 PID 的其他进程当作服务。
 - 开发与发布工具改由 `uv` 和锁定的 `funbuild` 管理。
 - 登录改为通过 JSON 请求体传递用户名密码，不再作为 URL 查询参数（避免凭据被记入访问日志/代理日志）。
 - 本地 SQLite 数据库目录、`.run/` 下的 PID、active-config、日志文件落盘时显式收紧为目录 0700、文件 0600，不再依赖进程 umask。
 - `scripts/setup.sh` 改为基于脚本自身位置解析仓库根目录，不再依赖调用时的当前工作目录。
 - `server status` 支持不带环境参数非交互运行，默认汇总 `dev`/`prod` 两个环境；`stop`/`restart`/`status` 按环境分别维护 PID、日志和 active-config，`stop prod` 不会再误停 `dev` 服务。
 - `/login` 校验用户名不存在时也执行一次等耗时的密码哈希比对，避免通过响应耗时差异枚举已注册用户名。
+
+### 废弃
+
+- 顶层 `start`、`stop`、`status` 在兼容期内恢复可用并发出 `DeprecationWarning`；请改用对应的 `server` 子命令，计划在 `0.3.0` 移除。
 
 ### 变更
 

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import NoReturn
@@ -14,6 +15,7 @@ import click
 from .config import (
     PACKAGE_NAME,
     config_value,
+    default_state_dir,
     load_config,
     resolve_config_path,
 )
@@ -33,7 +35,8 @@ def _active_config_file(environment: str) -> Path:
 
 
 def _runtime_dir() -> Path:
-    return Path.cwd() / ".run"
+    """返回不受调用目录影响的运行状态目录。"""
+    return default_state_dir() / ".run"
 
 
 def _read_active_config(environment: str) -> Path | None:
@@ -84,6 +87,34 @@ def _pid_belongs_to_service(pid: int) -> bool:
     except OSError:
         return False
     return b"funuser" in command
+
+
+def _has_state(environment: str) -> bool:
+    pid_file, _ = _state_paths(environment)
+    return pid_file.exists() or _active_config_file(environment).exists()
+
+
+def _clear_stale_state(environment: str) -> None:
+    """移除无法对应到正在运行 funuser 服务的状态文件。"""
+    pid_file, _ = _state_paths(environment)
+    pid_file.unlink(missing_ok=True)
+    _active_config_file(environment).unlink(missing_ok=True)
+
+
+def _clear_or_reject_existing_service(environment: str) -> None:
+    """拒绝真实服务重复启动，并清理陈旧 PID 状态。"""
+    pid = _read_pid(environment)
+    if pid is not None and _pid_is_live(pid) and _pid_belongs_to_service(pid):
+        _fail(f"funuser 已在运行（pid {pid}）")
+    if _has_state(environment):
+        if pid is None:
+            detail = "PID 无效或缺失"
+        elif _pid_is_live(pid):
+            detail = f"pid {pid} 不属于 funuser"
+        else:
+            detail = f"pid {pid} 未运行"
+        click.echo(f"检测到陈旧运行状态（{detail}），已清理", err=True)
+        _clear_stale_state(environment)
 
 
 def _write_state(environment: str, config: Path, pid: int) -> None:
@@ -156,8 +187,8 @@ def _run_server(
     resolved = _resolved_config(config, environment)
     resolved_host, resolved_port = _server_settings(resolved, host, port)
     existing = _read_pid(environment)
-    if existing is not None and existing != os.getpid() and _pid_is_live(existing):
-        _fail(f"funuser 已在运行（pid {existing}）")
+    if existing != os.getpid():
+        _clear_or_reject_existing_service(environment)
 
     os.environ["FUNUSER_CONFIG_FILE"] = str(resolved)
     _write_state(environment, resolved, os.getpid())
@@ -179,12 +210,7 @@ def _start_server(
 ) -> None:
     if environment == "prod":
         _require_production_install()
-    active = _read_active_config(environment)
-    if active is not None:
-        active_pid = _read_pid(environment)
-        if active_pid is not None and _pid_is_live(active_pid):
-            _fail(f"funuser 已在运行（pid {active_pid}）")
-        _clear_state(environment, active)
+    _clear_or_reject_existing_service(environment)
 
     resolved = _resolved_config(config, environment)
     _, resolved_port = _server_settings(resolved, host, port)
@@ -218,7 +244,12 @@ def _start_server(
 
     time.sleep(1)
     pid = _read_pid(environment)
-    if process.poll() is not None or pid is None or not _pid_is_live(pid):
+    if (
+        process.poll() is not None
+        or pid is None
+        or not _pid_is_live(pid)
+        or not _pid_belongs_to_service(pid)
+    ):
         _clear_state(environment, resolved)
         _fail(f"funuser 启动失败，请查看日志：{log_file}")
     click.echo(f"funuser 已启动（pid {pid}，端口 {resolved_port}，日志 {log_file}）")
@@ -252,12 +283,17 @@ def _status_server(environment: str, config: Path | None, port: int | None) -> N
     resolved = _resolved_config(config, environment, use_active=True)
     pid = _read_pid(environment)
     _, resolved_port = _server_settings(resolved, None, port)
-    if pid is not None and _pid_is_live(pid):
+    if pid is not None and _pid_is_live(pid) and _pid_belongs_to_service(pid):
         click.echo(
             f"{environment}: 运行中（funuser@{_version()}，pid {pid}，端口 {resolved_port}）"
         )
     elif pid is not None:
-        click.echo(f"{environment}: PID 文件已失效（pid {pid}，funuser@{_version()}）")
+        detail = "进程未运行" if not _pid_is_live(pid) else "PID 不属于 funuser"
+        click.echo(
+            f"{environment}: PID 文件陈旧（pid {pid}，{detail}，funuser@{_version()}）"
+        )
+    elif _has_state(environment):
+        click.echo(f"{environment}: PID 文件陈旧（内容无效，funuser@{_version()}）")
     else:
         click.echo(f"{environment}: 未在运行（funuser@{_version()}）")
 
@@ -344,6 +380,47 @@ def server_status(
     """显示 API 服务状态和已安装版本。"""
     environments = (environment,) if environment else ("dev", "prod")
     for target in environments:
+        _status_server(target, config, port)
+
+
+def _warn_deprecated_command(command: str) -> None:
+    warnings.warn(
+        f"`funuser {command}` 已废弃；请改用 `funuser server {command}`，"
+        "将在 0.3.0 移除。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+
+@cli.command("start")
+@click.argument("environment", type=click.Choice(("dev", "prod")), required=False)
+@_server_options
+def start(
+    environment: str | None, host: str | None, port: int | None, config: Path | None
+) -> None:
+    """兼容旧版后台启动命令。"""
+    _warn_deprecated_command("start")
+    _start_server(environment or "prod", config, host, port)
+
+
+@cli.command("stop")
+@click.argument("environment", type=click.Choice(("dev", "prod")), required=False)
+@click.option("--port", type=click.IntRange(1, 65535), help="监听端口")
+@click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
+def stop(environment: str | None, port: int | None, config: Path | None) -> None:
+    """兼容旧版停止命令。"""
+    _warn_deprecated_command("stop")
+    _stop_server(environment or "prod", config, port)
+
+
+@cli.command("status")
+@click.argument("environment", type=click.Choice(("dev", "prod")), required=False)
+@click.option("--port", type=click.IntRange(1, 65535), help="监听端口")
+@click.option("--config", type=click.Path(path_type=Path), help="启动时使用的配置文件")
+def status(environment: str | None, port: int | None, config: Path | None) -> None:
+    """兼容旧版状态命令。"""
+    _warn_deprecated_command("status")
+    for target in (environment,) if environment else ("dev", "prod"):
         _status_server(target, config, port)
 
 
