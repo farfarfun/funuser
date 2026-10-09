@@ -32,7 +32,9 @@ scripts/setup.sh stop
 scripts/setup.sh restart
 ```
 
-`dev` 使用仓库依赖并开启自动重载，`prod` 只运行已安装的正式包。`start` 在后台运行，`run` 在前台运行，`stop`、`restart` 和带环境参数的 `status` 只操作目标环境；运行状态分别保存在仓库根目录的 `.run/funuser-dev.*` 与 `.run/funuser-prod.*`。`scripts/setup.sh` 的服务动作不带环境参数，始终转发给已安装 CLI 的 `prod` 实例；开发调试请直接使用 `funuser server <动作> dev`。脚本可从任意工作目录调用，并始终以脚本所在仓库为工作目录。
+`dev` 使用仓库依赖并开启自动重载，`prod` 只运行已安装的正式包。`start` 在后台运行，`run` 在前台运行，`stop`、`restart` 和带环境参数的 `status` 只操作目标环境；运行状态分别保存在 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funuser/.run/funuser-dev.*` 与 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funuser/.run/funuser-prod.*`，不受调用目录影响。`scripts/setup.sh` 的服务动作不带环境参数，始终转发给已安装 CLI 的 `prod` 实例；开发调试请直接使用 `funuser server <动作> dev`。脚本可从任意工作目录调用，并始终以脚本所在仓库为工作目录。
+
+旧的顶层 `funuser start`、`funuser stop` 和 `funuser status` 仍可在兼容期内使用，但会发出 `DeprecationWarning`；请分别迁移为 `funuser server start`、`funuser server stop` 和 `funuser server status`。这些顶层命令计划在 `0.3.0` 移除。
 
 `scripts/setup.sh install-prod [版本]` 使用 `uv tool` 从 PyPI 安装正式包；脚本的 `start` 和 `run` 只运行正式安装包，拒绝源码或 editable 安装。`scripts/setup.sh publish` 调用 `funbuild build` 的完整发布流程。`upgrade [版本]`、`rollback <版本>` 和 `uninstall` 分别用于升级、回退和卸载。
 

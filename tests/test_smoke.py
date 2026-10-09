@@ -329,8 +329,8 @@ def test_cli_start_and_stop_paths(tmp_path: Path, monkeypatch) -> None:
         commands.append(command)
         return SimpleNamespace(poll=lambda: None)
 
-    monkeypatch.setattr(cli_module, "_read_active_config", lambda _environment: None)
-    monkeypatch.setattr(cli_module, "_read_pid", lambda _environment: 321)
+    pids = iter((None, 321, 321))
+    monkeypatch.setattr(cli_module, "_read_pid", lambda _environment: next(pids))
     monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: True)
     monkeypatch.setattr(cli_module, "_pid_belongs_to_service", lambda _pid: True)
     monkeypatch.setattr(cli_module.subprocess, "Popen", fake_popen)
@@ -389,16 +389,89 @@ def test_cli_stop_uses_the_requested_environment(tmp_path: Path, monkeypatch) ->
 def test_runtime_files_use_environment_specific_dot_run(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """PID 和日志统一位于服务工作目录的 .run，并按环境隔离。"""
+    """PID 和日志位于稳定的 XDG `.run` 目录，并按环境隔离。"""
     from funuser import cli as cli_module
 
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    other_working_directory = tmp_path / "other-working-directory"
+    other_working_directory.mkdir()
+    monkeypatch.chdir(other_working_directory)
     dev_pid, dev_log = cli_module._state_paths("dev")
     prod_pid, prod_log = cli_module._state_paths("prod")
-    assert dev_pid == tmp_path / ".run/funuser-dev.pid"
-    assert dev_log == tmp_path / ".run/funuser-dev.log"
-    assert prod_pid == tmp_path / ".run/funuser-prod.pid"
-    assert prod_log == tmp_path / ".run/funuser-prod.log"
+    runtime_dir = tmp_path / "config/farfarfun/funuser/.run"
+    assert dev_pid == runtime_dir / "funuser-dev.pid"
+    assert dev_log == runtime_dir / "funuser-dev.log"
+    assert prod_pid == runtime_dir / "funuser-prod.pid"
+    assert prod_log == runtime_dir / "funuser-prod.log"
+
+
+def test_cli_rejects_live_pid_only_when_it_is_funuser(tmp_path: Path, monkeypatch) -> None:
+    """启动仅将命令行属于 funuser 的存活 PID 视为重复服务。"""
+    import click
+    from click.testing import CliRunner
+
+    from funuser import cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config = tmp_path / "config.toml"
+    cli_module._write_state("dev", config, 321)
+    monkeypatch.setattr(cli_module, "_pid_is_live", lambda _pid: True)
+    monkeypatch.setattr(cli_module, "_pid_belongs_to_service", lambda _pid: False)
+
+    result = CliRunner().invoke(cli_module.cli, ["server", "status", "dev"])
+    assert result.exit_code == 0, result.output
+    assert "PID 文件陈旧" in result.output
+    assert "运行中" not in result.output
+
+    cli_module._clear_or_reject_existing_service("dev")
+    pid_file, _ = cli_module._state_paths("dev")
+    assert not pid_file.exists()
+    assert not cli_module._has_state("dev")
+
+    monkeypatch.setattr(cli_module, "_pid_belongs_to_service", lambda _pid: True)
+    cli_module._write_state("dev", config, 321)
+    with pytest.raises(click.ClickException, match="已在运行"):
+        cli_module._clear_or_reject_existing_service("dev")
+
+
+def test_cli_legacy_commands_warn_and_forward(monkeypatch) -> None:
+    """顶层旧命令在弃用期内仍可调用对应的 server 命令。"""
+    from click.testing import CliRunner
+
+    from funuser import cli as cli_module
+
+    calls = []
+    monkeypatch.setattr(
+        cli_module,
+        "_start_server",
+        lambda environment, config, host, port: calls.append(
+            ("start", environment, config, host, port)
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_stop_server",
+        lambda environment, config, port: calls.append(("stop", environment, config, port)),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_status_server",
+        lambda environment, config, port: calls.append(("status", environment, config, port)),
+    )
+
+    runner = CliRunner()
+    with pytest.warns(DeprecationWarning, match="server start.*0.3.0"):
+        assert runner.invoke(cli_module.cli, ["start"]).exit_code == 0
+    with pytest.warns(DeprecationWarning, match="server stop.*0.3.0"):
+        assert runner.invoke(cli_module.cli, ["stop", "dev"]).exit_code == 0
+    with pytest.warns(DeprecationWarning, match="server status.*0.3.0"):
+        assert runner.invoke(cli_module.cli, ["status", "prod"]).exit_code == 0
+
+    assert calls == [
+        ("start", "prod", None, None, None),
+        ("stop", "dev", None, None),
+        ("status", "prod", None, None),
+    ]
 
 
 def test_state_dir_and_pid_file_permissions_are_private(
@@ -416,7 +489,6 @@ def test_state_dir_and_pid_file_permissions_are_private(
     state_dir = tmp_path / "config" / "farfarfun" / "funuser"
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
 
-    monkeypatch.chdir(tmp_path)
     config = tmp_path / "config.toml"
     cli_module._write_state("dev", config, 999)
     pid_file, _ = cli_module._state_paths("dev")
